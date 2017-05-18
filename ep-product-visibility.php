@@ -41,62 +41,124 @@ function ep_product_visibility_dependencies_met_cb( $status ) {
 }
 
 /**
- * add product_visibility to index with term_taxonomy_id
- * code modified from https://github.com/10up/ElasticPress/blob/2.1/classes/class-ep-api.php#L599
+ * Removes product_visbility tax_queries and recreates them with term_id instead of term_taxonomy_id
  *
- * @param $post_args
- * @param $post_id
+ * @param $tax_query
  *
- * @return mixed
+ * @return array
  */
-function ep_product_visibility_add_tax( $post_args, $post_id ) {
-    if ( 'product' == $post_args[ 'post_type' ] ) {
+function ep_wc_product_visibility_convert_terms( $tax_query ) {
 
-	    $taxonomy = get_taxonomy( 'product_visibility' );
+	/**
+	 * unset the product_visibility tax_queries that exist
+	 */
+	foreach ( $tax_query AS $key => $value ) {
 
-	    $object_terms = get_the_terms( $post_id, $taxonomy->name );
+		// if taxonomy is in array and is product_visibility unset this $key
+		if ( ! empty( $value['taxonomy'] ) && 'product_visibility' == $value['taxonomy'] ) {
+			unset( $tax_query[$key] );
+		}
 
-	    if ( ! $object_terms || is_wp_error( $object_terms ) ) {
-		    return $post_args;
-	    }
+	}
 
-	    $terms_dic = array();
+	/**
+	 * now recreate product_visibility tax_queries with term_ids instead of term_taxonomy_ids
+	 * TODO: woocommerce passes $main_query into the function, not sure is_main_query is appropriate substitute
+	 */
+	$product_visibility_terms  = ep_wc_product_visibility_get_term_ids();
+	$product_visibility_not_in = array( is_search() && is_main_query() ? $product_visibility_terms['exclude-from-search'] : $product_visibility_terms['exclude-from-catalog'] );
 
-	    foreach ( $object_terms as $term ) {
-		    if( ! isset( $terms_dic[ $term->term_id ] ) ) {
-			    $terms_dic[ $term->term_id ] = array(
-				    'term_id'  => $term->term_id,
-				    'slug'     => $term->slug,
-				    'name'     => $term->name,
-				    'parent'   => $term->parent,
-                    'term_taxonomy_id'   => $term->term_taxonomy_id
-			    );
-		    }
-	    }
+	// Hide out of stock products.
+	if ( 'yes' === get_option( 'woocommerce_hide_out_of_stock_items' ) ) {
+		$product_visibility_not_in[] = $product_visibility_terms['outofstock'];
+	}
 
-	    $post_args['terms'][ $taxonomy->name ] = array_values( $terms_dic );
+	// Filter by rating.
+	if ( isset( $_GET['rating_filter'] ) ) {
+		$rating_filter = array_filter( array_map( 'absint', explode( ',', $_GET['rating_filter'] ) ) );
+		$rating_terms  = array();
+		for ( $i = 1; $i <= 5; $i ++ ) {
+			if ( in_array( $i, $rating_filter ) && isset( $product_visibility_terms[ 'rated-' . $i ] ) ) {
+				$rating_terms[] = $product_visibility_terms[ 'rated-' . $i ];
+			}
+		}
+		if ( ! empty( $rating_terms ) ) {
+			$tax_query[] = array(
+				'taxonomy'      => 'product_visibility',
+				'field'         => 'term_id',
+				'terms'         => $rating_terms,
+				'operator'      => 'IN',
+				'rating_filter' => true,
+			);
+		}
+	}
 
-	    return $post_args;
-    }
+	if ( ! empty( $product_visibility_not_in ) ) {
+		$tax_query[] = array(
+			'taxonomy' => 'product_visibility',
+			'field'    => 'term_id',
+			'terms'    => $product_visibility_not_in,
+			'operator' => 'NOT IN',
+		);
+	}
+
+	return $tax_query;
+}
+
+
+function ep_wc_product_visibility_get_term_ids() {
+	return array_map( 'absint', wp_parse_args(
+		wp_list_pluck(
+			get_terms( array(
+				'taxonomy' => 'product_visibility',
+				'hide_empty' => false,
+			) ),
+			'term_id',
+			'name'
+		),
+		array(
+			'exclude-from-catalog' => 0,
+			'exclude-from-search'  => 0,
+			'featured'             => 0,
+			'outofstock'           => 0,
+			'rated-1'              => 0,
+			'rated-2'              => 0,
+			'rated-3'              => 0,
+			'rated-4'              => 0,
+			'rated-5'              => 0,
+		)
+	) );
+}
+
+function ep_wc_product_visibility_whitelist_taxonomies( $taxonomies, $post ) {
+
+	$woo_taxonomies = array();
+	$product_visibility = get_taxonomy( 'product_visibility' );
+	$woo_taxonomies[] = $product_visibility;
+
+	return array_merge( $taxonomies, $woo_taxonomies );
 }
 
 /**
  * Setup
  */
 function ep_product_visibility_setup() {
-	add_filter( 'ep_post_sync_args', 'ep_product_visibility_add_tax', 10, 2 );
+	add_filter( 'ep_sync_taxonomies', 'ep_wc_product_visibility_whitelist_taxonomies', 11, 2 );
+	add_filter( 'woocommerce_product_query_tax_query', 'ep_wc_product_visibility_convert_terms' );
 }
 
 /**
  * Register the module
  */
 add_action( 'plugins_loaded', function() {
-	ep_register_feature( 'product_visibility', array(
-		'title'                     => 'Woocommerce Product Visibility',
-		'setup_cb'                  => 'ep_product_visibility_setup',
-		'feature_box_summary_cb'    => 'ep_product_visibility_module_box_summary',
-		'feature_box_long_cb'       => 'ep_product_visibility_module_box_long',
-		'requirements_status_cb'    => 'ep_product_visibility_dependencies_met_cb',
-		'requires_install_reindex'  => true
-	) );
+    if ( function_exists('ep_register_feature' ) ) {
+	    ep_register_feature( 'product_visibility', array(
+		    'title'                     => 'Woocommerce Product Visibility',
+		    'setup_cb'                  => 'ep_product_visibility_setup',
+		    'feature_box_summary_cb'    => 'ep_product_visibility_module_box_summary',
+		    'feature_box_long_cb'       => 'ep_product_visibility_module_box_long',
+		    'requirements_status_cb'    => 'ep_product_visibility_dependencies_met_cb',
+		    'requires_install_reindex'  => true
+	    ) );
+    }
 } );
