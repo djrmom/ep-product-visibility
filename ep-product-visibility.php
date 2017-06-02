@@ -41,7 +41,7 @@ function ep_product_visibility_dependencies_met_cb( $status ) {
 }
 
 /**
- * Removes product_visbility tax_queries and recreates them with term_id instead of term_taxonomy_id
+ * Converts term_query on term_taxonomy_id to term_id
  *
  * @param $tax_query
  *
@@ -49,87 +49,34 @@ function ep_product_visibility_dependencies_met_cb( $status ) {
  */
 function ep_wc_product_visibility_convert_terms( $tax_query ) {
 
-	/**
-	 * unset the product_visibility tax_queries that exist
-	 */
-	foreach ( $tax_query AS $key => $value ) {
+	return array_map( function( $tax_query_el ) {
+		if ( is_array( $tax_query_el ) && isset( $tax_query_el[ 'field' ] ) && 'term_taxonomy_id' == $tax_query_el[ 'field' ] ) {
 
-		// if taxonomy is in array and is product_visibility unset this $key
-		if ( ! empty( $value['taxonomy'] ) && 'product_visibility' == $value['taxonomy'] ) {
-			unset( $tax_query[$key] );
-		}
+			$tax_query_el[ 'field' ] = 'term_id';
 
-	}
-
-	/**
-	 * now recreate product_visibility tax_queries with term_ids instead of term_taxonomy_ids
-	 * TODO: woocommerce passes $main_query into the function, not sure is_main_query is appropriate substitute
-	 */
-	$product_visibility_terms  = ep_wc_product_visibility_get_term_ids();
-	$product_visibility_not_in = array( is_search() && is_main_query() ? $product_visibility_terms['exclude-from-search'] : $product_visibility_terms['exclude-from-catalog'] );
-
-	// Hide out of stock products.
-	if ( 'yes' === get_option( 'woocommerce_hide_out_of_stock_items' ) ) {
-		$product_visibility_not_in[] = $product_visibility_terms['outofstock'];
-	}
-
-	// Filter by rating.
-	if ( isset( $_GET['rating_filter'] ) ) {
-		$rating_filter = array_filter( array_map( 'absint', explode( ',', $_GET['rating_filter'] ) ) );
-		$rating_terms  = array();
-		for ( $i = 1; $i <= 5; $i ++ ) {
-			if ( in_array( $i, $rating_filter ) && isset( $product_visibility_terms[ 'rated-' . $i ] ) ) {
-				$rating_terms[] = $product_visibility_terms[ 'rated-' . $i ];
+			if ( ! empty( $tax_query_el[ 'terms' ] ) ) {
+				$tax_query_el[ 'terms' ] = array_map( function( $tax_query_term ) {
+					if (  $term = get_term_by( 'term_taxonomy_id', $tax_query_term ) ) {
+						$tax_query_term = absint( $term->term_id );
+					}
+					return $tax_query_term;
+				}, (array)$tax_query_el[ 'terms' ] );
 			}
 		}
-		if ( ! empty( $rating_terms ) ) {
-			$tax_query[] = array(
-				'taxonomy'      => 'product_visibility',
-				'field'         => 'term_id',
-				'terms'         => $rating_terms,
-				'operator'      => 'IN',
-				'rating_filter' => true,
-			);
-		}
-	}
 
-	if ( ! empty( $product_visibility_not_in ) ) {
-		$tax_query[] = array(
-			'taxonomy' => 'product_visibility',
-			'field'    => 'term_id',
-			'terms'    => $product_visibility_not_in,
-			'operator' => 'NOT IN',
-		);
-	}
+		return $tax_query_el;
 
-	return $tax_query;
+    }, $tax_query );
 }
 
-
-function ep_wc_product_visibility_get_term_ids() {
-	return array_map( 'absint', wp_parse_args(
-		wp_list_pluck(
-			get_terms( array(
-				'taxonomy' => 'product_visibility',
-				'hide_empty' => false,
-			) ),
-			'term_id',
-			'name'
-		),
-		array(
-			'exclude-from-catalog' => 0,
-			'exclude-from-search'  => 0,
-			'featured'             => 0,
-			'outofstock'           => 0,
-			'rated-1'              => 0,
-			'rated-2'              => 0,
-			'rated-3'              => 0,
-			'rated-4'              => 0,
-			'rated-5'              => 0,
-		)
-	) );
-}
-
+/**
+ * Add 'product_visibility' taxonomy to elasticpress
+ *
+ * @param $taxonomies
+ * @param $post
+ *
+ * @return array
+ */
 function ep_wc_product_visibility_whitelist_taxonomies( $taxonomies, $post ) {
 
 	$woo_taxonomies = array();
